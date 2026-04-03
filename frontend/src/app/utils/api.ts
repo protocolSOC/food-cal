@@ -65,3 +65,101 @@ export async function logMealToBackend(text: string, date: string): Promise<LogM
   }
   return res.json() as Promise<LogMealResponse>;
 }
+
+export type ApiEntryRow = {
+  id: number;
+  name: string;
+  calories: number;
+  protein: number;
+  timestamp: number;
+};
+
+export type EntriesResponse = {
+  entries: ApiEntryRow[];
+};
+
+export async function fetchEntriesForDate(date: string): Promise<EntriesResponse> {
+  const base = getApiBaseUrl();
+  let res: Response;
+  try {
+    res = await fetch(`${base}/entries?date=${encodeURIComponent(date)}`);
+  } catch (e) {
+    const msg =
+      e instanceof TypeError
+        ? `Cannot reach API at ${base}. Start the backend (e.g. uvicorn app.main:app).`
+        : String(e);
+    throw new Error(msg);
+  }
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(formatApiError(res.status, errText));
+  }
+  return res.json() as Promise<EntriesResponse>;
+}
+
+export async function deleteEntryRemote(entryId: number): Promise<void> {
+  const base = getApiBaseUrl();
+  let res: Response;
+  try {
+    res = await fetch(`${base}/entries/${entryId}`, { method: 'DELETE' });
+  } catch (e) {
+    const msg =
+      e instanceof TypeError
+        ? `Cannot reach API at ${base}.`
+        : String(e);
+    throw new Error(msg);
+  }
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(formatApiError(res.status, errText));
+  }
+}
+
+export type RollupDay = {
+  date: string;
+  total_calories: number;
+  meals: number;
+  total_protein_g?: number;
+};
+
+export type EntryRollupsResponse = {
+  days: RollupDay[];
+};
+
+export async function fetchEntryRollups(start: string, end: string): Promise<EntryRollupsResponse> {
+  const base = getApiBaseUrl();
+  const q = `start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
+  let res: Response;
+  try {
+    res = await fetch(`${base}/entries-rollups?${q}`);
+  } catch (e) {
+    const msg =
+      e instanceof TypeError
+        ? `Cannot reach API at ${base}.`
+        : String(e);
+    throw new Error(msg);
+  }
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(formatApiError(res.status, errText));
+  }
+  return res.json() as Promise<EntryRollupsResponse>;
+}
+
+export type FoodSuggestResponse = {
+  suggestions: string[];
+};
+
+/** USDA FDC search suggestions for meal input; returns [] on error (no throw). */
+export async function fetchFoodSuggestions(q: string, limit = 12): Promise<string[]> {
+  const base = getApiBaseUrl();
+  const params = new URLSearchParams({ q, limit: String(limit) });
+  try {
+    const res = await fetch(`${base}/food-suggest?${params}`);
+    if (!res.ok) return [];
+    const data = (await res.json()) as FoodSuggestResponse;
+    return Array.isArray(data.suggestions) ? data.suggestions : [];
+  } catch {
+    return [];
+  }
+}

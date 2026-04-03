@@ -18,7 +18,15 @@ from pydantic import BaseModel, field_validator
 
 from app import db
 from app.debug_agent_log import agent_log
-from app.meals import daily_summary, log_meal
+from app.usda_fdc import search_food_names_usda
+from app.meals import (
+    daily_summary,
+    delete_entry,
+    entries_rollups,
+    list_entries_for_date,
+    log_meal,
+    validate_date_iso,
+)
 
 
 @asynccontextmanager
@@ -55,7 +63,29 @@ async def root() -> dict[str, str]:
         "docs": "/docs",
         "log_meal": "POST /log-meal",
         "daily_summary": "GET /get-daily-summary?date=YYYY-MM-DD",
+        "entries": "GET /entries?date=YYYY-MM-DD",
+        "delete_entry": "DELETE /entries/{entry_id}",
+        "entries_rollups": "GET /entries-rollups?start=YYYY-MM-DD&end=YYYY-MM-DD",
+        "food_suggest": "GET /food-suggest?q=...&limit=12",
     }
+
+
+class FoodSuggestResponse(BaseModel):
+    suggestions: list[str]
+
+
+@app.get("/food-suggest")
+async def get_food_suggest(q: str = "", limit: int = 12) -> FoodSuggestResponse:
+    """USDA FDC search hit descriptions for meal input autocomplete (search-only)."""
+    q = q.strip()
+    if len(q) > 120:
+        raise HTTPException(status_code=400, detail="q must be at most 120 characters")
+    if limit < 1 or limit > 25:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 25")
+    if not q:
+        return FoodSuggestResponse(suggestions=[])
+    suggestions = await search_food_names_usda(q, page_size=limit)
+    return FoodSuggestResponse(suggestions=suggestions)
 
 
 app.add_middleware(
@@ -115,3 +145,34 @@ async def post_log_meal(body: LogMealBody) -> dict:
 @app.get("/get-daily-summary")
 async def get_daily_summary(date: str) -> dict:
     return daily_summary(date)
+
+
+@app.get("/entries")
+async def get_entries(date: str) -> dict[str, list]:
+    try:
+        validate_date_iso(date)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"entries": list_entries_for_date(date)}
+
+
+@app.delete("/entries/{entry_id}")
+async def remove_entry(entry_id: int) -> dict[str, str]:
+    if entry_id < 1:
+        raise HTTPException(status_code=400, detail="invalid entry id")
+    if not delete_entry(entry_id):
+        raise HTTPException(status_code=404, detail="entry not found")
+    return {"status": "ok"}
+
+
+@app.get("/entries-rollups")
+async def get_entries_rollups(start: str, end: str) -> dict[str, list]:
+    try:
+        validate_date_iso(start)
+        validate_date_iso(end)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    try:
+        return {"days": entries_rollups(start, end)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e

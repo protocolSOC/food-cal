@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from app import db
 from app.food_types import FoodLookupResult
-from app.off_foods import _choose_primary_by_anchor, _fallback_lookup, _pick_best_off_product
+from app.off_foods import (
+    _choose_primary_by_anchor,
+    _fallback_lookup,
+    _pick_best_off_product,
+    needs_llm_sanity_check,
+    repair_hit_with_baseline_anchor,
+)
 
 
 def test_pick_best_off_product_prefers_exact_name_and_plausible_kcal() -> None:
@@ -59,6 +65,7 @@ def test_fallback_lookup_reads_seeded_db_baseline() -> None:
     assert hit is not None
     assert hit.kcal_per_100g == 52.0
     assert hit.protein_per_100g == 0.3
+    assert hit.default_serving_grams == 185.0
     assert hit.food_category == "fruit"
 
 
@@ -90,3 +97,18 @@ def test_choose_primary_by_anchor_uses_db_baseline() -> None:
     assert primary.kcal_per_100g == 52.0
     assert secondary is not None
     assert secondary.kcal_per_100g == 25.0
+
+
+def test_repair_hit_with_baseline_anchor_repairs_macro_and_serving() -> None:
+    repaired = repair_hit_with_baseline_anchor("apple", FoodLookupResult(25.0, 0.6, 50.0, "fruit"))
+    assert repaired.kcal_per_100g == 52.0
+    assert repaired.protein_per_100g == 0.3
+    assert repaired.default_serving_grams == 185.0
+
+
+def test_needs_llm_sanity_check_when_serving_far_from_baseline() -> None:
+    assert needs_llm_sanity_check("apple", FoodLookupResult(52.0, 0.3, 20.0, "fruit")) is True
+
+
+def test_needs_llm_sanity_check_false_for_plausible_hit() -> None:
+    assert needs_llm_sanity_check("apple", FoodLookupResult(52.0, 0.3, 182.0, "fruit")) is False

@@ -1,13 +1,49 @@
+import { useState, useEffect } from 'react';
 import { Calendar, PlusCircle, BarChart3, History } from 'lucide-react';
-import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { useNavigate } from 'react-router';
-import { getTodayDate, getDayLog } from '../utils/foodData';
+import { getTodayDate, getOfflineDayLog } from '../utils/foodData';
+import { fetchEntriesForDate } from '../utils/api';
 
 export default function Dashboard() {
   const navigate = useNavigate();
   const today = getTodayDate();
-  const todayLog = getDayLog(today);
+  const [todayLog, setTodayLog] = useState({
+    totalCalories: 0,
+    totalProtein: 0,
+    mealCount: 0,
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      const offline = getOfflineDayLog(today);
+      try {
+        const { entries } = await fetchEntriesForDate(today);
+        const apiCal = entries.reduce((s, e) => s + e.calories, 0);
+        const apiProt = entries.reduce((s, e) => s + e.protein, 0);
+        if (!cancelled) {
+          setTodayLog({
+            totalCalories: apiCal + offline.totalCalories,
+            totalProtein: apiProt + offline.totalProtein,
+            mealCount: entries.length + offline.entries.length,
+          });
+        }
+      } catch {
+        if (!cancelled) {
+          setTodayLog({
+            totalCalories: offline.totalCalories,
+            totalProtein: offline.totalProtein,
+            mealCount: offline.entries.length,
+          });
+        }
+      }
+    }
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [today]);
 
   const quickActions = [
     {
@@ -69,7 +105,7 @@ export default function Dashboard() {
                 <div className="text-sm text-muted-foreground">Protein</div>
               </div>
               <div className="text-center p-4 bg-green-50 rounded-lg">
-                <div className="text-2xl font-bold text-green-600">{todayLog.entries.length}</div>
+                <div className="text-2xl font-bold text-green-600">{todayLog.mealCount}</div>
                 <div className="text-sm text-muted-foreground">Meals</div>
               </div>
             </div>

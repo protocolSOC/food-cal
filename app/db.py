@@ -9,26 +9,26 @@ from pathlib import Path
 
 # No bundled nutrition rows — foods table is filled from Open Food Facts on demand (+ cache).
 SEED_FOODS: list[tuple[str, float, float]] = []
-SEED_FOOD_BASELINES: list[tuple[str, float, float, str | None]] = [
-    ("apple", 52.0, 0.3, "fruit"),
-    ("banana", 89.0, 1.1, "fruit"),
-    ("bread", 265.0, 9.0, "grain"),
-    ("carrot", 41.0, 0.9, "vegetable"),
-    ("cheese", 350.0, 23.0, "dairy"),
-    ("chicken breast", 165.0, 31.0, "protein"),
-    ("cucumber", 16.0, 0.7, "vegetable"),
-    ("egg", 143.0, 12.6, "protein"),
-    ("milk", 42.0, 3.4, "dairy"),
-    ("oats", 389.0, 17.0, "grain"),
-    ("pasta", 131.0, 5.0, "grain"),
-    ("potato", 77.0, 2.0, "vegetable"),
-    ("rice", 130.0, 2.7, "grain"),
-    ("rice cooked", 130.0, 2.3, "grain"),
-    ("salmon", 206.0, 22.0, "protein"),
-    ("sweet potato", 86.0, 1.6, "vegetable"),
-    ("tomato", 18.0, 0.9, "vegetable"),
-    ("tuna", 144.0, 23.0, "protein"),
-    ("yogurt", 59.0, 10.0, "dairy"),
+SEED_FOOD_BASELINES: list[tuple[str, float, float, str | None, float | None]] = [
+    ("apple", 52.0, 0.3, "fruit", 185.0),
+    ("banana", 89.0, 1.1, "fruit", 118.0),
+    ("bread", 265.0, 9.0, "grain", None),
+    ("carrot", 41.0, 0.9, "vegetable", 61.0),
+    ("cheese", 350.0, 23.0, "dairy", None),
+    ("chicken breast", 165.0, 31.0, "protein", None),
+    ("cucumber", 16.0, 0.7, "vegetable", 200.0),
+    ("egg", 143.0, 12.6, "protein", 50.0),
+    ("milk", 42.0, 3.4, "dairy", None),
+    ("oats", 389.0, 17.0, "grain", None),
+    ("pasta", 131.0, 5.0, "grain", None),
+    ("potato", 77.0, 2.0, "vegetable", 173.0),
+    ("rice", 130.0, 2.7, "grain", None),
+    ("rice cooked", 130.0, 2.3, "grain", None),
+    ("salmon", 206.0, 22.0, "protein", None),
+    ("sweet potato", 86.0, 1.6, "vegetable", 130.0),
+    ("tomato", 18.0, 0.9, "vegetable", 123.0),
+    ("tuna", 144.0, 23.0, "protein", None),
+    ("yogurt", 59.0, 10.0, "dairy", None),
 ]
 
 _conn: sqlite3.Connection | None = None
@@ -66,12 +66,34 @@ def _foods_column_names(conn: sqlite3.Connection) -> set[str]:
     return {str(r[1]) for r in cur.fetchall()}
 
 
+def _food_baselines_column_names(conn: sqlite3.Connection) -> set[str]:
+    cur = conn.execute("PRAGMA table_info(food_baselines)")
+    return {str(r[1]) for r in cur.fetchall()}
+
+
 def _migrate_foods(conn: sqlite3.Connection) -> None:
     cols = _foods_column_names(conn)
     if "default_serving_grams" not in cols:
         conn.execute("ALTER TABLE foods ADD COLUMN default_serving_grams REAL")
     if "food_category" not in cols:
         conn.execute("ALTER TABLE foods ADD COLUMN food_category TEXT")
+
+
+def _migrate_food_baselines(conn: sqlite3.Connection) -> None:
+    cols = _food_baselines_column_names(conn)
+    if "default_serving_grams" not in cols:
+        conn.execute("ALTER TABLE food_baselines ADD COLUMN default_serving_grams REAL")
+
+
+def _entries_column_names(conn: sqlite3.Connection) -> set[str]:
+    cur = conn.execute("PRAGMA table_info(entries)")
+    return {str(r[1]) for r in cur.fetchall()}
+
+
+def _migrate_entries(conn: sqlite3.Connection) -> None:
+    cols = _entries_column_names(conn)
+    if "created_at" not in cols:
+        conn.execute("ALTER TABLE entries ADD COLUMN created_at TEXT")
 
 
 def _init_schema(conn: sqlite3.Connection) -> None:
@@ -95,7 +117,8 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             calories_likely REAL,
             calories_low REAL,
             calories_high REAL,
-            raw_text TEXT NOT NULL
+            raw_text TEXT NOT NULL,
+            created_at TEXT
         );
 
         CREATE TABLE IF NOT EXISTS items (
@@ -113,11 +136,14 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             name TEXT PRIMARY KEY,
             kcal_per_100g REAL NOT NULL,
             protein_per_100g REAL NOT NULL,
-            food_category TEXT
+            food_category TEXT,
+            default_serving_grams REAL
         );
         """
     )
     _migrate_foods(conn)
+    _migrate_food_baselines(conn)
+    _migrate_entries(conn)
 
 
 def _seed_if_empty(conn: sqlite3.Connection) -> None:
@@ -131,16 +157,26 @@ def _seed_if_empty(conn: sqlite3.Connection) -> None:
 
     if not SEED_FOOD_BASELINES:
         return
-    row2 = conn.execute("SELECT COUNT(*) AS c FROM food_baselines").fetchone()
-    if row2 and row2["c"] > 0:
-        return
     conn.executemany(
         """
-        INSERT INTO food_baselines (name, kcal_per_100g, protein_per_100g, food_category)
-        VALUES (?, ?, ?, ?)
+        INSERT OR IGNORE INTO food_baselines (
+            name, kcal_per_100g, protein_per_100g, food_category, default_serving_grams
+        )
+        VALUES (?, ?, ?, ?, ?)
         """,
         SEED_FOOD_BASELINES,
     )
+    for name, _kcal, _protein, category, serving in SEED_FOOD_BASELINES:
+        conn.execute(
+            """
+            UPDATE food_baselines
+            SET
+                food_category = COALESCE(food_category, ?),
+                default_serving_grams = COALESCE(default_serving_grams, ?)
+            WHERE lower(name) = lower(?)
+            """,
+            (category, serving, name),
+        )
 
 
 def find_food_by_name(conn: sqlite3.Connection, normalized_name: str) -> sqlite3.Row | None:

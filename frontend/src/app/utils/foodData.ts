@@ -67,16 +67,20 @@ export function parseFoodInput(input: string): Partial<FoodEntry> | null {
   return null;
 }
 
-// LocalStorage helpers
-const STORAGE_KEY = 'food_tracker_data';
+/** Browser-only rows when the API is unreachable (not stored in SQLite). */
+const OFFLINE_STORAGE_KEY = 'food_tracker_offline';
 
-export function getAllLogs(): Record<string, DayLog> {
-  const data = localStorage.getItem(STORAGE_KEY);
+function getOfflineLogs(): Record<string, DayLog> {
+  const data = localStorage.getItem(OFFLINE_STORAGE_KEY);
   return data ? JSON.parse(data) : {};
 }
 
-export function getDayLog(date: string): DayLog {
-  const logs = getAllLogs();
+function saveOfflineLogs(logs: Record<string, DayLog>): void {
+  localStorage.setItem(OFFLINE_STORAGE_KEY, JSON.stringify(logs));
+}
+
+export function getOfflineDayLog(date: string): DayLog {
+  const logs = getOfflineLogs();
   return logs[date] || {
     date,
     entries: [],
@@ -85,17 +89,17 @@ export function getDayLog(date: string): DayLog {
   };
 }
 
-export function saveDayLog(dayLog: DayLog): void {
-  const logs = getAllLogs();
+function saveOfflineDayLog(dayLog: DayLog): void {
+  const logs = getOfflineLogs();
   logs[dayLog.date] = dayLog;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(logs));
+  saveOfflineLogs(logs);
 }
 
-export function addFoodEntry(date: string, entry: Omit<FoodEntry, 'id' | 'date' | 'timestamp'>): void {
-  const dayLog = getDayLog(date);
+export function addOfflineFoodEntry(date: string, entry: Omit<FoodEntry, 'id' | 'date' | 'timestamp'>): void {
+  const dayLog = getOfflineDayLog(date);
   const newEntry: FoodEntry = {
     ...entry,
-    id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+    id: `offline-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
     date,
     timestamp: Date.now(),
   };
@@ -104,16 +108,16 @@ export function addFoodEntry(date: string, entry: Omit<FoodEntry, 'id' | 'date' 
   dayLog.totalCalories = dayLog.entries.reduce((sum, e) => sum + e.calories, 0);
   dayLog.totalProtein = dayLog.entries.reduce((sum, e) => sum + e.protein, 0);
   
-  saveDayLog(dayLog);
+  saveOfflineDayLog(dayLog);
 }
 
-export function deleteFoodEntry(date: string, entryId: string): void {
-  const dayLog = getDayLog(date);
+export function deleteOfflineFoodEntry(date: string, entryId: string): void {
+  const dayLog = getOfflineDayLog(date);
   dayLog.entries = dayLog.entries.filter(e => e.id !== entryId);
   dayLog.totalCalories = dayLog.entries.reduce((sum, e) => sum + e.calories, 0);
   dayLog.totalProtein = dayLog.entries.reduce((sum, e) => sum + e.protein, 0);
   
-  saveDayLog(dayLog);
+  saveOfflineDayLog(dayLog);
 }
 
 export function formatDate(date: Date): string {

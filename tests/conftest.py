@@ -26,6 +26,12 @@ def _isolate_sqlite() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _default_disable_sanity_guardrail(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_SANITY_CHECK_ENABLED", "0")
+    monkeypatch.delenv("LLM_SANITY_MIN_CONFIDENCE", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _stub_open_food_facts(
     request: pytest.FixtureRequest,
     monkeypatch: pytest.MonkeyPatch,
@@ -45,6 +51,7 @@ def _stub_open_food_facts(
             "salmon": FoodLookupResult(206.0, 22.0, 150.0, "protein"),
             "apple": FoodLookupResult(52.0, 0.3, 185.0, "fruit"),
             "banana": FoodLookupResult(89.0, 1.1, 120.0, "fruit"),
+            "tomato": FoodLookupResult(18.0, 0.9, 123.0, "vegetable"),
         }
         return canned.get(q)
 

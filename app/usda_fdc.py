@@ -221,6 +221,56 @@ def _fdc_coarse_category(food: dict[str, Any]) -> str | None:
     return None
 
 
+async def search_food_names_usda(query: str, *, page_size: int = 12) -> list[str]:
+    """USDA FDC search only — descriptions from `foods/search`, no per-food GET (for autocomplete)."""
+    api_key = (os.environ.get("USDA_FDC_API_KEY") or "").strip()
+    if not api_key:
+        return []
+    if os.environ.get("USDA_FDC_DISABLED", "").lower() in ("1", "true", "yes"):
+        return []
+
+    q = query.strip()
+    if not q:
+        return []
+
+    n = max(1, min(int(page_size), 25))
+    payload = {
+        "query": q,
+        "pageSize": n,
+        "dataType": ["SR Legacy", "Foundation", "Survey (FNDDS)"],
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            sr = await client.post(
+                f"{FDC_BASE}/foods/search",
+                params={"api_key": api_key},
+                json=payload,
+            )
+            sr.raise_for_status()
+            data = sr.json()
+            foods = data.get("foods") or []
+            if not isinstance(foods, list) or not foods:
+                return []
+            seen: set[str] = set()
+            out: list[str] = []
+            for hit in foods:
+                if not isinstance(hit, dict):
+                    continue
+                desc = str(hit.get("description") or "").strip()
+                if not desc:
+                    continue
+                key = desc.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(desc)
+                if len(out) >= n:
+                    break
+            return out
+    except (httpx.HTTPError, ValueError, TypeError):
+        return []
+
+
 async def lookup_food_usda(query: str) -> FoodLookupResult | None:
     api_key = (os.environ.get("USDA_FDC_API_KEY") or "").strip()
     if not api_key:

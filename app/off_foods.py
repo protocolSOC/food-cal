@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -19,6 +20,14 @@ USER_AGENT = os.environ.get(
 
 _GRAMS_IN_STRING = re.compile(r"(\d+(?:\.\d+)?)\s*g(?:ram)?s?\b", re.IGNORECASE)
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+@dataclass(frozen=True)
+class BaselineMeta:
+    kcal_per_100g: float
+    protein_per_100g: float
+    food_category: str | None
+    default_serving_grams: float | None
 
 
 def _f(x: Any) -> float | None:
@@ -46,19 +55,32 @@ def _baseline_row(query: str):
     return db.get_food_baseline(conn, normalized)
 
 
-def _fallback_lookup(query: str) -> FoodLookupResult | None:
+def _baseline_meta(query: str) -> BaselineMeta | None:
     row = _baseline_row(query)
     if row is None:
         return None
-    kcal = float(row["kcal_per_100g"])
-    prot = float(row["protein_per_100g"])
     raw_cat = row["food_category"]
     cat = str(raw_cat).strip().lower() if raw_cat is not None else None
+    serving = _f(row["default_serving_grams"])
+    if serving is not None and serving <= 0:
+        serving = None
+    return BaselineMeta(
+        float(row["kcal_per_100g"]),
+        float(row["protein_per_100g"]),
+        cat,
+        serving,
+    )
+
+
+def _fallback_lookup(query: str) -> FoodLookupResult | None:
+    baseline = _baseline_meta(query)
+    if baseline is None:
+        return None
     return FoodLookupResult(
-        round(kcal, 3),
-        round(prot, 3),
-        default_serving_grams=None,
-        food_category=cat,
+        round(baseline.kcal_per_100g, 3),
+        round(baseline.protein_per_100g, 3),
+        default_serving_grams=baseline.default_serving_grams,
+        food_category=baseline.food_category,
     )
 
 
@@ -154,14 +176,9 @@ def _kcal_anchor_penalty(anchor_kcal: float | None, kcal_per_100g: float) -> flo
 def _pick_best_off_product(query: str, products: list[dict[str, Any]]) -> FoodLookupResult | None:
     query_norm = _norm_text(query)
     query_tokens = _tokenize(query_norm)
-    baseline = _baseline_row(query_norm)
-    expected_category = None
-    anchor_kcal: float | None = None
-    if baseline is not None:
-        raw_cat = baseline["food_category"]
-        if raw_cat is not None:
-            expected_category = str(raw_cat).strip().lower()
-        anchor_kcal = float(baseline["kcal_per_100g"])
+    baseline = _baseline_meta(query_norm)
+    expected_category = baseline.food_category if baseline is not None else None
+    anchor_kcal: float | None = baseline.kcal_per_100g if baseline is not None else None
     ranked: list[tuple[tuple[Any, ...], FoodLookupResult]] = []
 
     for p in products:
@@ -235,23 +252,24 @@ def _choose_primary_by_anchor(
     This keeps deterministic rows robust when one API returns a semantically different product
     for a short query (e.g., a low-calorie drink variant for a whole-food noun).
     """
-    baseline = _baseline_row(query)
+    baseline = _baseline_meta(query)
     if baseline is None:
         return (usda_hit, off_hit)
-    anchor_kcal = float(baseline["kcal_per_100g"])
+    anchor_kcal = baseline.kcal_per_100g
     usda_d = _relative_kcal_distance(anchor_kcal, float(usda_hit.kcal_per_100g))
     # If OFF is unavailable and USDA is a clear outlier, keep USDA serving/category but
     # use the known generic per-100g anchor to avoid implausible deterministic results.
     if off_hit is None and usda_d >= 0.45:
-        raw_cat = baseline["food_category"]
-        baseline_cat = str(raw_cat).strip().lower() if raw_cat is not None else None
-        cat = usda_hit.food_category if usda_hit.food_category is not None else baseline_cat
-        anchor_protein = float(baseline["protein_per_100g"])
+        cat = usda_hit.food_category if usda_hit.food_category is not None else baseline.food_category
+        anchor_protein = baseline.protein_per_100g
+        serving = baseline.default_serving_grams
+        if serving is None:
+            serving = usda_hit.default_serving_grams
         return (
             FoodLookupResult(
                 round(anchor_kcal, 3),
                 round(anchor_protein, 3),
-                usda_hit.default_serving_grams,
+                serving,
                 cat,
             ),
             None,
@@ -262,6 +280,59 @@ def _choose_primary_by_anchor(
     if off_d + 1e-9 < usda_d:
         return (off_hit, usda_hit)
     return (usda_hit, off_hit)
+
+
+def repair_hit_with_baseline_anchor(query: str, hit: FoodLookupResult) -> FoodLookupResult:
+    """Repair severe outlier cache/API hits using baseline macros + serving when available."""
+    baseline = _baseline_meta(query)
+    if baseline is None:
+        return hit
+    rel_dist = _relative_kcal_distance(baseline.kcal_per_100g, float(hit.kcal_per_100g))
+    if rel_dist < 0.45:
+        return hit
+    serving = baseline.default_serving_grams
+    if serving is None:
+        serving = hit.default_serving_grams
+    cat = hit.food_category if hit.food_category is not None else baseline.food_category
+    return FoodLookupResult(
+        round(baseline.kcal_per_100g, 3),
+        round(baseline.protein_per_100g, 3),
+        serving,
+        cat,
+    )
+
+
+def baseline_context(query: str) -> dict[str, Any] | None:
+    baseline = _baseline_meta(query)
+    if baseline is None:
+        return None
+    return {
+        "kcal_per_100g": baseline.kcal_per_100g,
+        "protein_per_100g": baseline.protein_per_100g,
+        "default_serving_grams": baseline.default_serving_grams,
+        "food_category": baseline.food_category,
+    }
+
+
+def needs_llm_sanity_check(query: str, hit: FoodLookupResult) -> bool:
+    """True when deterministic result is still suspicious after baseline repair."""
+    baseline = _baseline_meta(query)
+    if baseline is None:
+        return False
+    kcal_dist = _relative_kcal_distance(baseline.kcal_per_100g, float(hit.kcal_per_100g))
+    if kcal_dist >= 0.45:
+        return True
+    baseline_serving = baseline.default_serving_grams
+    if baseline_serving is None:
+        return False
+    if hit.default_serving_grams is None:
+        return True
+    if hit.default_serving_grams <= 0:
+        return True
+    ratio = float(hit.default_serving_grams) / float(baseline_serving)
+    if ratio < 0.5 or ratio > 2.0:
+        return True
+    return False
 
 
 async def _lookup_open_food_facts(query: str) -> FoodLookupResult | None:

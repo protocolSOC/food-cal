@@ -6,11 +6,13 @@ import json
 import math
 import os
 import re
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from app.debug_agent_log import agent_log
+from app.food_types import FoodLookupResult
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
 
@@ -49,6 +51,157 @@ total_protein_g is your best estimate of total dietary protein for the whole mea
 For a typical Israeli full serving (e.g. shawarma in laffa with fries inside), treat calories_likely as roughly 900–1300 kcal and total_protein_g around 40–60 unless the user clearly indicates a snack or half portion.
 Include all JSON keys even if uncertain; guess grams, calories, and protein responsibly.
 Reply with JSON only — no prose before or after the object."""
+
+_SANITY_SYSTEM_PROMPT = """You are a nutrition sanity checker for a calorie app.
+Given one food query, a candidate deterministic result, and an optional baseline reference,
+return strict JSON only with this schema:
+{
+  "is_plausible": boolean,
+  "confidence": number,
+  "corrected_kcal_per_100g": number | null,
+  "corrected_serving_grams": number | null,
+  "reason": string
+}
+Rules:
+- confidence is 0..1
+- Prefer deterministic baseline-compatible corrections for obvious outliers
+- If candidate seems plausible, set is_plausible=true and leave corrected_* as null
+- Never include markdown/prose outside JSON
+"""
+
+
+@dataclass(frozen=True)
+class FoodSanityVerdict:
+    is_plausible: bool
+    confidence: float
+    corrected_kcal_per_100g: float | None
+    corrected_serving_grams: float | None
+    reason: str
+
+
+def sanity_check_enabled() -> bool:
+    return os.environ.get("LLM_SANITY_CHECK_ENABLED", "").lower() in ("1", "true", "yes")
+
+
+def sanity_min_confidence() -> float:
+    raw = os.environ.get("LLM_SANITY_MIN_CONFIDENCE", "0.8")
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return 0.8
+    if v < 0.0:
+        return 0.0
+    if v > 1.0:
+        return 1.0
+    return v
+
+
+def _sanity_optional_float(raw: Any) -> float | None:
+    if raw is None:
+        return None
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(v):
+        return None
+    return v
+
+
+def _parse_sanity_verdict(parsed: dict[str, Any]) -> FoodSanityVerdict:
+    if not isinstance(parsed.get("is_plausible"), bool):
+        raise ValueError("LLM sanity JSON missing boolean is_plausible")
+    confidence_raw = parsed.get("confidence")
+    try:
+        confidence = float(confidence_raw)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"LLM sanity JSON confidence must be numeric, got {confidence_raw!r}") from e
+    if not math.isfinite(confidence):
+        raise ValueError("LLM sanity JSON confidence must be finite")
+    if confidence < 0.0:
+        confidence = 0.0
+    if confidence > 1.0:
+        confidence = 1.0
+    return FoodSanityVerdict(
+        is_plausible=bool(parsed["is_plausible"]),
+        confidence=confidence,
+        corrected_kcal_per_100g=_sanity_optional_float(parsed.get("corrected_kcal_per_100g")),
+        corrected_serving_grams=_sanity_optional_float(parsed.get("corrected_serving_grams")),
+        reason=str(parsed.get("reason") or "").strip(),
+    )
+
+
+async def validate_food_result_with_llm(
+    query: str,
+    candidate: FoodLookupResult,
+    baseline: dict[str, Any] | None,
+) -> FoodSanityVerdict:
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY is not set; cannot run LLM sanity check")
+    model = os.environ.get("LLM_SANITY_MODEL", "openai/gpt-5-nano")
+    referer = os.environ.get("OPENROUTER_HTTP_REFERER", "https://github.com/hybrid-calorie-app")
+    app_name = os.environ.get("OPENROUTER_APP_NAME", "Hybrid Calorie App")
+    max_tokens_raw = os.environ.get("LLM_SANITY_MAX_TOKENS", "400")
+    try:
+        max_tokens = int(max_tokens_raw)
+    except ValueError:
+        max_tokens = 400
+    if max_tokens < 128:
+        max_tokens = 128
+    payload = {
+        "query": query.strip().lower(),
+        "candidate": {
+            "kcal_per_100g": float(candidate.kcal_per_100g),
+            "protein_per_100g": float(candidate.protein_per_100g),
+            "default_serving_grams": candidate.default_serving_grams,
+            "food_category": candidate.food_category,
+        },
+        "baseline": baseline,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": referer,
+        "X-Title": app_name,
+    }
+    body: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _SANITY_SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ],
+        "temperature": 0.0,
+        "max_tokens": max_tokens,
+        "response_format": {"type": "json_object"},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=35.0) as client:
+            r = await client.post(OPENROUTER_URL, headers=headers, json=body)
+            r.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        msg = _openrouter_http_error_message(e.response)
+        raise RuntimeError(f"OpenRouter sanity HTTP {e.response.status_code}: {msg}") from e
+    except httpx.RequestError as e:
+        raise RuntimeError(f"OpenRouter sanity request failed: {e}") from e
+    try:
+        data = r.json()
+        choice0 = data["choices"][0]
+        message = choice0["message"]
+    except (ValueError, KeyError, IndexError, TypeError) as e:
+        raise ValueError("Unexpected OpenRouter sanity response shape") from e
+    if not isinstance(message, dict):
+        raise ValueError("Unexpected OpenRouter sanity message shape")
+    text_out = _extract_llm_reply_text(message, choice0.get("finish_reason"))
+    parsed = _parse_json_payload(text_out)
+    verdict = _parse_sanity_verdict(parsed)
+    agent_log(
+        "llm.py:validate_food_result_with_llm",
+        "sanity_returned",
+        {"is_plausible": verdict.is_plausible, "confidence": verdict.confidence},
+        "H6",
+    )
+    return verdict
 
 
 def _assistant_text(content: Any) -> str:
