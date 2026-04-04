@@ -15,6 +15,8 @@ import {
 
 interface ChatInputProps {
   onSubmit: (text: string) => void | Promise<void>;
+  /** When set, choosing a saved preset logs via manual meal API instead of inserting the name for chat/LLM. */
+  onSubmitPreset?: (preset: ManualFoodPreset) => void | Promise<void>;
   placeholder?: string;
 }
 
@@ -22,7 +24,11 @@ type SuggestionRow =
   | { type: 'preset'; preset: ManualFoodPreset }
   | { type: 'usda'; name: string };
 
-export function ChatInput({ onSubmit, placeholder = "Try: 'I had chicken breast and rice'" }: ChatInputProps) {
+export function ChatInput({
+  onSubmit,
+  onSubmitPreset,
+  placeholder = "Try: 'I had chicken breast and rice'",
+}: ChatInputProps) {
   const [input, setInput] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -86,7 +92,25 @@ export function ChatInput({ onSubmit, placeholder = "Try: 'I had chicken breast 
     };
   }, []);
 
+  const submitPreset = async (preset: ManualFoodPreset) => {
+    if (isSending || !onSubmitPreset) return;
+    setPresetSuggestions([]);
+    setUsdaSuggestions([]);
+    setSelectedIndex(-1);
+    setInput('');
+    setIsSending(true);
+    try {
+      await onSubmitPreset(preset);
+    } finally {
+      setIsSending(false);
+    }
+  };
+
   const applySuggestionRow = (row: SuggestionRow) => {
+    if (row.type === 'preset' && onSubmitPreset) {
+      void submitPreset(row.preset);
+      return;
+    }
     const text = row.type === 'preset' ? row.preset.name : row.name;
     setInput(replaceActiveToken(input, text));
     setPresetSuggestions([]);
