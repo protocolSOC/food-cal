@@ -82,6 +82,15 @@ function saveOfflineLogs(logs: Record<string, DayLog>): void {
   localStorage.setItem(OFFLINE_STORAGE_KEY, JSON.stringify(logs));
 }
 
+/** Replace all browser-only day logs (used when restoring from a backup file). */
+export function replaceOfflineLogs(logs: Record<string, DayLog>): void {
+  try {
+    localStorage.setItem(OFFLINE_STORAGE_KEY, JSON.stringify(logs));
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
 export function getOfflineDayLog(date: string): DayLog {
   const logs = getOfflineLogs();
   return logs[date] || {

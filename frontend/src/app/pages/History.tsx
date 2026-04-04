@@ -1,6 +1,8 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import type { ChangeEvent } from 'react';
 import { useNavigate } from 'react-router';
-import { ArrowLeft, Calendar, ChevronRight } from 'lucide-react';
+import { ArrowLeft, Calendar, ChevronRight, Download, Upload } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import {
@@ -10,8 +12,16 @@ import {
   getOfflineLogs,
   getOfflineDayLog,
   getTodayDate,
+  replaceOfflineLogs,
+  type DayLog,
 } from '../utils/foodData';
-import { fetchEntryRollups, type RollupDay } from '../utils/api';
+import {
+  fetchBackupExport,
+  fetchEntryRollups,
+  postBackupImport,
+  type BackupImportMode,
+  type RollupDay,
+} from '../utils/api';
 
 const HISTORY_WINDOW_DAYS = 365;
 
@@ -67,10 +77,29 @@ function buildHistoryRows(
   return rows;
 }
 
+function isBackupShape(x: unknown): x is { format: string; version: number; entries: unknown[] } {
+  if (x === null || typeof x !== 'object') return false;
+  const o = x as Record<string, unknown>;
+  return o.format === 'foodcal-backup' && o.version === 1 && Array.isArray(o.entries);
+}
+
+function downloadJson(filename: string, data: unknown) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  const url = URL.createObjectURL(blob);
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function History() {
   const navigate = useNavigate();
   const [rows, setRows] = useState<HistoryRow[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [refreshTick, setRefreshTick] = useState(0);
+  const importModeRef = useRef<BackupImportMode>('append');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { start, end } = useMemo(() => {
     const e = getTodayDate();
@@ -99,20 +128,130 @@ export default function History() {
     return () => {
       cancelled = true;
     };
-  }, [start, end]);
+  }, [start, end, refreshTick]);
+
+  function openImportPicker(mode: BackupImportMode) {
+    importModeRef.current = mode;
+    fileInputRef.current?.click();
+  }
+
+  async function handleExportBackup() {
+    try {
+      const server = await fetchBackupExport();
+      const merged = {
+        ...server,
+        offline: getOfflineLogs(),
+        client_merged_at: new Date().toISOString(),
+      };
+      downloadJson(`foodcal-backup-${getTodayDate()}.json`, merged);
+      toast.success('Backup downloaded (server history and offline-only meals in this browser).');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function onBackupFileSelected(e: ChangeEvent<HTMLInputElement>) {
+    const input = e.target;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+
+    const mode = importModeRef.current;
+
+    try {
+      const text = await file.text();
+      const parsed: unknown = JSON.parse(text);
+      if (!isBackupShape(parsed)) {
+        toast.error('Not a valid foodcal backup (expected format foodcal-backup, version 1).');
+        return;
+      }
+      const record = parsed as Record<string, unknown>;
+
+      if (mode === 'replace') {
+        const ok = window.confirm(
+          'Replace mode deletes every meal stored on the server, then imports this file. This cannot be undone. Continue?',
+        );
+        if (!ok) return;
+      }
+
+      let applyOffline = false;
+      if (record.offline !== undefined && record.offline !== null) {
+        applyOffline = window.confirm(
+          'This file includes offline-only meals from another session or browser. Replace the offline-only data stored in this browser?',
+        );
+      }
+
+      await postBackupImport({
+        format: 'foodcal-backup',
+        version: 1,
+        entries: record.entries as unknown[],
+        mode,
+        exported_at: typeof record.exported_at === 'string' ? record.exported_at : null,
+      });
+
+      if (applyOffline && record.offline !== null && typeof record.offline === 'object') {
+        replaceOfflineLogs(record.offline as Record<string, DayLog>);
+      }
+
+      toast.success(
+        mode === 'append'
+          ? 'Import complete. Importing the same file again will duplicate server meals.'
+          : 'Import complete. Server history was replaced from the file.',
+      );
+      setRefreshTick((n) => n + 1);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-green-50 to-blue-50 p-4 md:p-8">
       <div className="max-w-4xl mx-auto">
-        <div className="flex items-center gap-4 mb-6">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/')}>
-            <ArrowLeft className="size-5" />
-          </Button>
+        <div className="flex flex-col gap-4 mb-6">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-center gap-4">
+              <Button variant="ghost" size="icon" onClick={() => navigate('/')}>
+                <ArrowLeft className="size-5" />
+              </Button>
 
-          <div className="flex-1">
-            <h1 className="text-2xl font-bold">History</h1>
-            <p className="text-sm text-muted-foreground">View all your logged days</p>
+              <div className="flex-1 min-w-0">
+                <h1 className="text-2xl font-bold">History</h1>
+                <p className="text-sm text-muted-foreground">View all your logged days (including today)</p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2 items-center sm:justify-end">
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={() => void handleExportBackup()}>
+                <Download className="size-3.5" />
+                Export backup
+              </Button>
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={() => openImportPicker('append')}>
+                <Upload className="size-3.5" />
+                Import (append)
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5 border-destructive/40 text-destructive hover:bg-destructive/10"
+                onClick={() => openImportPicker('replace')}
+              >
+                <Upload className="size-3.5" />
+                Import (replace server)
+              </Button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="application/json,.json"
+                className="sr-only"
+                aria-hidden
+                onChange={onBackupFileSelected}
+              />
+            </div>
           </div>
+          <p className="text-xs text-muted-foreground pl-0 sm:pl-14 max-w-2xl">
+            Back up includes all dates stored on the server plus offline-only entries saved in this browser. Use append to add
+            meals; replace clears the server first, then restores from the file.
+          </p>
         </div>
 
         {loadError && (

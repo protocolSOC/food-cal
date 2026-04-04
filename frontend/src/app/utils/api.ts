@@ -251,3 +251,69 @@ export async function fetchFoodSuggestions(q: string, limit = 12): Promise<FoodS
     return { suggestions: [], usdaEnabled: true };
   }
 }
+
+export type BackupServerPayload = {
+  format: 'foodcal-backup';
+  version: 1;
+  exported_at: string;
+  entries: unknown[];
+};
+
+export type BackupImportMode = 'append' | 'replace';
+
+export type BackupImportResult = {
+  status: string;
+  mode: string;
+  inserted_entries: number;
+  inserted_items: number;
+};
+
+export async function fetchBackupExport(): Promise<BackupServerPayload> {
+  const base = getApiBaseUrl();
+  let res: Response;
+  try {
+    res = await fetch(`${base}/backup/export`);
+  } catch (e) {
+    const msg =
+      e instanceof TypeError
+        ? `Cannot reach API at ${base}. Start the backend (e.g. uvicorn app.main:app).`
+        : String(e);
+    throw new Error(msg);
+  }
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(formatApiError(res.status, errText));
+  }
+  return res.json() as Promise<BackupServerPayload>;
+}
+
+export async function postBackupImport(
+  payload: {
+    format: 'foodcal-backup';
+    version: 1;
+    entries: unknown[];
+    mode: BackupImportMode;
+    exported_at?: string | null;
+  },
+): Promise<BackupImportResult> {
+  const base = getApiBaseUrl();
+  let res: Response;
+  try {
+    res = await fetch(`${base}/backup/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    const msg =
+      e instanceof TypeError
+        ? `Cannot reach API at ${base}.`
+        : String(e);
+    throw new Error(msg);
+  }
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(formatApiError(res.status, errText));
+  }
+  return res.json() as Promise<BackupImportResult>;
+}

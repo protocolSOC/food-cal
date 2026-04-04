@@ -17,6 +17,7 @@ load_dotenv(_PROJECT_ROOT / ".env")
 from pydantic import BaseModel, field_validator
 
 from app import db
+from app.backup import BackupImportBody, export_backup, import_backup
 from app.debug_agent_log import agent_log
 from app.usda_fdc import search_food_names_usda, usda_fdc_suggest_enabled
 from app.meals import (
@@ -69,6 +70,8 @@ async def root() -> dict[str, str]:
         "delete_entry": "DELETE /entries/{entry_id}",
         "entries_rollups": "GET /entries-rollups?start=YYYY-MM-DD&end=YYYY-MM-DD",
         "food_suggest": "GET /food-suggest?q=...&limit=12",
+        "backup_export": "GET /backup/export",
+        "backup_import": "POST /backup/import",
     }
 
 
@@ -205,6 +208,19 @@ async def remove_entry(entry_id: int) -> dict[str, str]:
     if not delete_entry(entry_id):
         raise HTTPException(status_code=404, detail="entry not found")
     return {"status": "ok"}
+
+
+@app.get("/backup/export")
+async def get_backup_export() -> dict:
+    return export_backup()
+
+
+@app.post("/backup/import")
+async def post_backup_import(body: BackupImportBody) -> dict:
+    try:
+        return import_backup(body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @app.get("/entries-rollups")
