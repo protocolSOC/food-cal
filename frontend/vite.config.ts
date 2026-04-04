@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -34,4 +35,9 @@ export default defineConfig({
 
   // File types to support raw imports. Never add .css, .tsx, or .ts files to this.
   assetsInclude: ['**/*.svg', '**/*.csv'],
+
+  test: {
+    environment: 'node',
+    include: ['src/**/*.test.ts'],
+  },
 })

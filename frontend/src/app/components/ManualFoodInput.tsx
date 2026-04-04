@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo, type KeyboardEvent } from 'react';
+import { useState, useRef, useEffect, useMemo, type FocusEvent, type KeyboardEvent } from 'react';
 import { ChevronDown, Link2, Plus, Save, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from './ui/button';
@@ -15,6 +15,12 @@ import {
   saveManualPreset,
   type ManualFoodPreset,
 } from '../utils/manualPresets';
+import {
+  evaluateManualNumber,
+  expandGramsStarPrefix,
+  parseSubmittableNumber,
+  scaleLinkedMacros,
+} from '../utils/manualNumericInput';
 
 export type ManualFoodFormData = {
   name: string;
@@ -33,10 +39,11 @@ type SuggestionRow =
 
 function formHasValidNumbers(name: string, grams: string, protein: string, calories: string): boolean {
   if (!name.trim() || !grams || !protein || !calories) return false;
-  const g = parseFloat(grams);
-  const p = parseFloat(protein);
-  const c = parseFloat(calories);
-  return Number.isFinite(g) && Number.isFinite(p) && Number.isFinite(c);
+  return (
+    parseSubmittableNumber(grams) !== null &&
+    parseSubmittableNumber(protein) !== null &&
+    parseSubmittableNumber(calories) !== null
+  );
 }
 
 export function ManualFoodInput({ onSubmit }: ManualFoodInputProps) {
@@ -55,6 +62,11 @@ export function ManualFoodInput({ onSubmit }: ManualFoodInputProps) {
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   /** When on, editing grams scales calories and protein by the same ratio. */
   const [portionLinkEnabled, setPortionLinkEnabled] = useState(false);
+  /** Reference weight (grams) for linked ratio; avoids using previous expression value while typing (e.g. 70*2 → 70*20). */
+  const linkedAnchorGramsRef = useRef<number | null>(null);
+  /** Kcal and protein at anchor grams — scaling uses these, not current displayed values (fixes revert e.g. 50*2 → 50). */
+  const linkedBaselineCaloriesRef = useRef<number | null>(null);
+  const linkedBaselineProteinRef = useRef<number | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const blurCloseRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -108,9 +120,11 @@ export function ManualFoodInput({ onSubmit }: ManualFoodInputProps) {
     formData.calories,
   );
 
-  useEffect(() => {
-    if (!isValid) setPortionLinkEnabled(false);
-  }, [isValid]);
+  const clearLinkedPortionRefs = () => {
+    linkedAnchorGramsRef.current = null;
+    linkedBaselineCaloriesRef.current = null;
+    linkedBaselineProteinRef.current = null;
+  };
 
   const clearSuggestions = () => {
     setPresetSuggestions([]);
@@ -122,6 +136,9 @@ export function ManualFoodInput({ onSubmit }: ManualFoodInputProps) {
   const applySuggestionRow = (row: SuggestionRow) => {
     if (row.type === 'preset') {
       const p = row.preset;
+      linkedAnchorGramsRef.current = p.grams;
+      linkedBaselineCaloriesRef.current = p.calories;
+      linkedBaselineProteinRef.current = p.protein;
       setFormData({
         name: p.name,
         grams: String(p.grams),
@@ -154,11 +171,15 @@ export function ManualFoodInput({ onSubmit }: ManualFoodInputProps) {
 
   const handleSubmit = () => {
     if (!isValid) return;
+    const grams = parseSubmittableNumber(formData.grams);
+    const protein = parseSubmittableNumber(formData.protein);
+    const calories = parseSubmittableNumber(formData.calories);
+    if (grams === null || protein === null || calories === null) return;
     onSubmit({
       name: formData.name.trim(),
-      grams: parseFloat(formData.grams),
-      protein: parseFloat(formData.protein),
-      calories: parseFloat(formData.calories),
+      grams,
+      protein,
+      calories,
     });
     setFormData({
       name: '',
@@ -167,15 +188,16 @@ export function ManualFoodInput({ onSubmit }: ManualFoodInputProps) {
       calories: '',
     });
     setPortionLinkEnabled(false);
+    clearLinkedPortionRefs();
     clearSuggestions();
   };
 
   const handleSavePreset = () => {
     if (!formData.name || !formData.grams || !formData.protein || !formData.calories) return;
-    const grams = parseFloat(formData.grams);
-    const protein = parseFloat(formData.protein);
-    const calories = parseFloat(formData.calories);
-    if (Number.isNaN(grams) || Number.isNaN(protein) || Number.isNaN(calories)) {
+    const grams = parseSubmittableNumber(formData.grams);
+    const protein = parseSubmittableNumber(formData.protein);
+    const calories = parseSubmittableNumber(formData.calories);
+    if (grams === null || protein === null || calories === null) {
       toast.error('Enter valid numbers for weight, calories, and protein.');
       return;
     }
@@ -236,30 +258,71 @@ export function ManualFoodInput({ onSubmit }: ManualFoodInputProps) {
 
   const handleGramsChange = (nextGrams: string) => {
     setFormData((prev) => {
+      const expandedGrams = expandGramsStarPrefix(nextGrams, prev.grams);
       if (!portionLinkEnabled) {
-        return { ...prev, grams: nextGrams };
+        return { ...prev, grams: expandedGrams };
       }
-      if (nextGrams.trim() === '') {
-        return { ...prev, grams: nextGrams };
+      if (expandedGrams.trim() === '') {
+        return { ...prev, grams: expandedGrams };
       }
-      const prevG = parseFloat(prev.grams);
-      const nextG = parseFloat(nextGrams);
-      if (!Number.isFinite(prevG) || prevG <= 0 || !Number.isFinite(nextG)) {
-        return { ...prev, grams: nextGrams };
+      const nextEval = evaluateManualNumber(expandedGrams);
+      if (nextEval.kind !== 'ok' || nextEval.value <= 0) {
+        return { ...prev, grams: expandedGrams };
       }
-      const prevC = parseFloat(prev.calories);
-      const prevP = parseFloat(prev.protein);
-      if (!Number.isFinite(prevC) || !Number.isFinite(prevP)) {
-        return { ...prev, grams: nextGrams };
+      const anchor = linkedAnchorGramsRef.current;
+      const baseC = linkedBaselineCaloriesRef.current;
+      const baseP = linkedBaselineProteinRef.current;
+      if (
+        anchor !== null &&
+        anchor > 0 &&
+        Number.isFinite(anchor) &&
+        baseC !== null &&
+        baseP !== null &&
+        Number.isFinite(baseC) &&
+        Number.isFinite(baseP)
+      ) {
+        const scaled = scaleLinkedMacros(anchor, baseC, baseP, nextEval.value);
+        return {
+          ...prev,
+          grams: expandedGrams,
+          calories: String(scaled.calories),
+          protein: String(scaled.protein),
+        };
       }
-      const ratio = nextG / prevG;
+      const prevC = evaluateManualNumber(prev.calories);
+      const prevP = evaluateManualNumber(prev.protein);
+      if (prevC.kind !== 'ok' || prevP.kind !== 'ok') {
+        return { ...prev, grams: expandedGrams };
+      }
+      let denom: number | null =
+        anchor !== null && anchor > 0 && Number.isFinite(anchor) ? anchor : null;
+      if (denom === null) {
+        const prevG = evaluateManualNumber(prev.grams);
+        if (prevG.kind !== 'ok' || prevG.value <= 0) {
+          return { ...prev, grams: expandedGrams };
+        }
+        denom = prevG.value;
+      }
+      const ratio = nextEval.value / denom;
       return {
         ...prev,
-        grams: nextGrams,
-        calories: String(Math.round(prevC * ratio)),
-        protein: String(Math.round(prevP * ratio * 10) / 10),
+        grams: expandedGrams,
+        calories: String(Math.round(prevC.value * ratio)),
+        protein: String(Math.round(prevP.value * ratio * 10) / 10),
       };
     });
+  };
+
+  const handleGramsBlur = (e: FocusEvent<HTMLInputElement>) => {
+    if (!portionLinkEnabled) return;
+    const g = parseSubmittableNumber(e.currentTarget.value);
+    const c = parseSubmittableNumber(formData.calories);
+    const p = parseSubmittableNumber(formData.protein);
+    if (g !== null && g > 0 && c !== null && p !== null) {
+      linkedAnchorGramsRef.current = g;
+      linkedBaselineCaloriesRef.current = c;
+      linkedBaselineProteinRef.current = p;
+    }
   };
 
   return (
@@ -382,14 +445,14 @@ export function ManualFoodInput({ onSubmit }: ManualFoodInputProps) {
           </Label>
           <Input
             id="food-grams"
-            type="number"
+            type="text"
+            inputMode="decimal"
             placeholder="150"
             value={formData.grams}
             onChange={(e) => handleGramsChange(e.target.value)}
+            onBlur={handleGramsBlur}
             onKeyDown={handleOtherKeyDown}
             className="h-11"
-            min={0}
-            step={0.1}
           />
         </div>
 
@@ -399,14 +462,13 @@ export function ManualFoodInput({ onSubmit }: ManualFoodInputProps) {
           </Label>
           <Input
             id="food-calories"
-            type="number"
+            type="text"
+            inputMode="decimal"
             placeholder="165"
             value={formData.calories}
             onChange={(e) => setFormData({ ...formData, calories: e.target.value })}
             onKeyDown={handleOtherKeyDown}
             className="h-11"
-            min={0}
-            step={1}
           />
         </div>
 
@@ -416,14 +478,13 @@ export function ManualFoodInput({ onSubmit }: ManualFoodInputProps) {
           </Label>
           <Input
             id="food-protein"
-            type="number"
+            type="text"
+            inputMode="decimal"
             placeholder="31"
             value={formData.protein}
             onChange={(e) => setFormData({ ...formData, protein: e.target.value })}
             onKeyDown={handleOtherKeyDown}
             className="h-11"
-            min={0}
-            step={0.1}
           />
         </div>
       </div>
@@ -471,7 +532,10 @@ export function ManualFoodInput({ onSubmit }: ManualFoodInputProps) {
                   : 'text-muted-foreground hover:text-foreground',
               )}
               aria-pressed={!portionLinkEnabled}
-              onClick={() => setPortionLinkEnabled(false)}
+              onClick={() => {
+                setPortionLinkEnabled(false);
+                clearLinkedPortionRefs();
+              }}
             >
               Independent
             </button>
@@ -487,7 +551,16 @@ export function ManualFoodInput({ onSubmit }: ManualFoodInputProps) {
               aria-disabled={!isValid}
               disabled={!isValid && !portionLinkEnabled}
               onClick={() => {
-                if (isValid) setPortionLinkEnabled(true);
+                if (!isValid) return;
+                const g = parseSubmittableNumber(formData.grams);
+                const c = parseSubmittableNumber(formData.calories);
+                const p = parseSubmittableNumber(formData.protein);
+                if (g !== null && g > 0 && c !== null && p !== null) {
+                  linkedAnchorGramsRef.current = g;
+                  linkedBaselineCaloriesRef.current = c;
+                  linkedBaselineProteinRef.current = p;
+                }
+                setPortionLinkEnabled(true);
               }}
             >
               Linked
