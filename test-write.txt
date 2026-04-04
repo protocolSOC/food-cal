@@ -1,10 +1,9 @@
-import { useState, useRef, useEffect, useMemo, type KeyboardEvent } from 'react';
-import { ChevronDown, Plus, Save, X } from 'lucide-react';
+﻿import { useState, useRef, useEffect, useMemo, type KeyboardEvent } from 'react';
+import { Plus, Save, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
-import { cn } from './ui/utils';
 import { fetchFoodSuggestions } from '../utils/api';
 import { activeSearchQuery, replaceActiveToken } from '../utils/foodNameQuery';
 import {
@@ -43,8 +42,7 @@ export function ManualFoodInput({ onSubmit }: ManualFoodInputProps) {
   const [usdaSuggestions, setUsdaSuggestions] = useState<string[]>([]);
   const [usdaEnabled, setUsdaEnabled] = useState(true);
   const [selectedIndex, setSelectedIndex] = useState(-1);
-  /** Open via chevron only — avoids covering weight/calories/protein on focus. */
-  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const [nameFocused, setNameFocused] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const blurCloseRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -57,7 +55,7 @@ export function ManualFoodInput({ onSubmit }: ManualFoodInputProps) {
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
 
-    if (!suggestionsOpen) {
+    if (!nameFocused) {
       setPresetSuggestions([]);
       setUsdaSuggestions([]);
       setSelectedIndex(-1);
@@ -89,13 +87,12 @@ export function ManualFoodInput({ onSubmit }: ManualFoodInputProps) {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [formData.name, suggestionsOpen]);
+  }, [formData.name, nameFocused]);
 
   const clearSuggestions = () => {
     setPresetSuggestions([]);
     setUsdaSuggestions([]);
     setSelectedIndex(-1);
-    setSuggestionsOpen(false);
   };
 
   const applySuggestionRow = (row: SuggestionRow) => {
@@ -171,10 +168,10 @@ export function ManualFoodInput({ onSubmit }: ManualFoodInputProps) {
     toast.success(result.updated ? 'Saved preset updated.' : 'Saved for reuse in this browser.');
   };
 
-  const showNameDropdown = suggestionsOpen && suggestionRows.length > 0;
+  const showNameDropdown = nameFocused && suggestionRows.length > 0;
   const activeQ = activeSearchQuery(formData.name);
   const showUsdaHint =
-    suggestionsOpen && Boolean(activeQ) && !usdaEnabled && suggestionRows.length === 0;
+    nameFocused && Boolean(activeQ) && !usdaEnabled && suggestionRows.length === 0;
 
   const handleNameKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     const showList = showNameDropdown;
@@ -220,109 +217,95 @@ export function ManualFoodInput({ onSubmit }: ManualFoodInputProps) {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <div className="md:col-span-2">
+        <div className="relative md:col-span-2">
           <Label htmlFor="food-name" className="mb-1.5 block text-sm font-medium">
             Food Name
           </Label>
-          <div className="relative flex gap-2">
-            {showNameDropdown && (
-              <ul
-                className="absolute z-50 bottom-full left-0 right-0 mb-1 max-h-60 overflow-auto rounded-md border border-border bg-popover text-popover-foreground shadow-md"
-                role="listbox"
-              >
-                {suggestionRows.map((row, idx) =>
-                  row.type === 'preset' ? (
-                    <li
-                      key={`p-${row.preset.id}`}
-                      className="flex items-stretch"
-                      role="option"
-                      aria-selected={selectedIndex === idx}
-                    >
-                      <button
-                        type="button"
-                        className={`min-w-0 flex-1 cursor-pointer px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground ${
-                          selectedIndex === idx ? 'bg-accent text-accent-foreground' : ''
-                        }`}
-                        onMouseDown={(ev) => ev.preventDefault()}
-                        onClick={() => applySuggestionRow(row)}
-                      >
-                        <div className="font-medium">{row.preset.name}</div>
-                        <div className="text-muted-foreground text-xs">
-                          Saved · {row.preset.calories} kcal · {row.preset.grams}g · P {row.preset.protein}g
-                        </div>
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Remove from saved list"
-                        className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive shrink-0 px-2.5"
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                        }}
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          removePreset(row.preset.id);
-                        }}
-                      >
-                        <X className="size-4" />
-                      </button>
-                    </li>
-                  ) : (
-                    <li
-                      key={`u-${row.name}-${idx}`}
-                      role="option"
-                      aria-selected={selectedIndex === idx}
-                    >
-                      <button
-                        type="button"
-                        className={`w-full cursor-pointer px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground ${
-                          selectedIndex === idx ? 'bg-accent text-accent-foreground' : ''
-                        }`}
-                        onMouseDown={(ev) => ev.preventDefault()}
-                        onClick={() => applySuggestionRow(row)}
-                      >
-                        {row.name}
-                      </button>
-                    </li>
-                  ),
-                )}
-              </ul>
-            )}
-            <Input
-              id="food-name"
-              placeholder="e.g., Grilled Chicken Breast"
-              value={formData.name}
-              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              onKeyDown={handleNameKeyDown}
-              onFocus={() => {
-                if (blurCloseRef.current) {
-                  clearTimeout(blurCloseRef.current);
-                  blurCloseRef.current = null;
-                }
-              }}
-              onBlur={() => {
-                blurCloseRef.current = setTimeout(() => setSuggestionsOpen(false), 150);
-              }}
-              className="h-11 min-w-0 flex-1"
-              autoComplete="off"
-              aria-autocomplete="list"
-              aria-expanded={showNameDropdown}
-            />
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              className="h-11 w-11 shrink-0"
-              aria-label={suggestionsOpen ? 'Close suggestions' : 'Show saved foods and name suggestions'}
-              aria-expanded={suggestionsOpen}
-              aria-haspopup="listbox"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => setSuggestionsOpen((open) => !open)}
+          <Input
+            id="food-name"
+            placeholder="e.g., Grilled Chicken Breast"
+            value={formData.name}
+            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+            onKeyDown={handleNameKeyDown}
+            onFocus={() => {
+              if (blurCloseRef.current) {
+                clearTimeout(blurCloseRef.current);
+                blurCloseRef.current = null;
+              }
+              setNameFocused(true);
+            }}
+            onBlur={() => {
+              blurCloseRef.current = setTimeout(() => setNameFocused(false), 150);
+            }}
+            className="h-11"
+            autoComplete="off"
+            aria-autocomplete="list"
+            aria-expanded={showNameDropdown}
+          />
+          {showNameDropdown && (
+            <ul
+              className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-md border border-border bg-popover text-popover-foreground shadow-md"
+              role="listbox"
             >
-              <ChevronDown className={cn('size-4 transition-transform', suggestionsOpen && 'rotate-180')} />
-            </Button>
-          </div>
+              {suggestionRows.map((row, idx) =>
+                row.type === 'preset' ? (
+                  <li
+                    key={`p-${row.preset.id}`}
+                    className="flex items-stretch"
+                    role="option"
+                    aria-selected={selectedIndex === idx}
+                  >
+                    <button
+                      type="button"
+                      className={`min-w-0 flex-1 cursor-pointer px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground ${
+                        selectedIndex === idx ? 'bg-accent text-accent-foreground' : ''
+                      }`}
+                      onMouseDown={(ev) => ev.preventDefault()}
+                      onClick={() => applySuggestionRow(row)}
+                    >
+                      <div className="font-medium">{row.preset.name}</div>
+                      <div className="text-muted-foreground text-xs">
+                        Saved · {row.preset.calories} kcal · {row.preset.grams}g · P {row.preset.protein}g
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Remove from saved list"
+                      className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive shrink-0 px-2.5"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                      }}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        removePreset(row.preset.id);
+                      }}
+                    >
+                      <X className="size-4" />
+                    </button>
+                  </li>
+                ) : (
+                  <li
+                    key={`u-${row.name}-${idx}`}
+                    role="option"
+                    aria-selected={selectedIndex === idx}
+                  >
+                    <button
+                      type="button"
+                      className={`w-full cursor-pointer px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground ${
+                        selectedIndex === idx ? 'bg-accent text-accent-foreground' : ''
+                      }`}
+                      onMouseDown={(ev) => ev.preventDefault()}
+                      onClick={() => applySuggestionRow(row)}
+                    >
+                      {row.name}
+                    </button>
+                  </li>
+                ),
+              )}
+            </ul>
+          )}
           {showUsdaHint && (
             <p className="text-muted-foreground mt-1.5 text-xs px-0.5">
               Food hints use USDA FoodData Central. Set <code className="rounded bg-muted px-1">USDA_FDC_API_KEY</code>{' '}
@@ -403,3 +386,4 @@ export function ManualFoodInput({ onSubmit }: ManualFoodInputProps) {
     </div>
   );
 }
+

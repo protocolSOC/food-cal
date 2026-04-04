@@ -318,7 +318,17 @@ export default function DailyLog() {
               </CardHeader>
               <CardContent>
                 <TabsContent value="chat" className="mt-0">
-                  <ChatInput onSubmit={handleChatSubmit} />
+                  <ChatInput
+                    onSubmit={handleChatSubmit}
+                    onSubmitPreset={(p) =>
+                      handleManualSubmit({
+                        name: p.name,
+                        grams: p.grams,
+                        protein: p.protein,
+                        calories: p.calories,
+                      })
+                    }
+                  />
                 </TabsContent>
                 <TabsContent value="manual" className="mt-0">
                   <ManualFoodInput onSubmit={handleManualSubmit} />
