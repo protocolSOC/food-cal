@@ -1,7 +1,9 @@
-import { Trash2, Apple } from 'lucide-react';
+import { Trash2, Apple, Save } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
 import { FoodEntry as FoodEntryType, APP_TIME_ZONE } from '../utils/foodData';
+import { saveManualPreset } from '../utils/manualPresets';
 
 interface FoodEntryProps {
   entry: FoodEntryType;
@@ -21,6 +23,27 @@ export function FoodEntry({ entry, onDelete }: FoodEntryProps) {
     : entry.gramsPartial
       ? 'Some items have no gram amount; total is incomplete'
       : undefined;
+
+  const savePresetDisabledTitle =
+    'Weight (grams) is required to save this meal as a reusable preset';
+
+  const handleSavePreset = () => {
+    if (!gramsKnown || entry.gramsTotal == null) {
+      toast.error('Weight (grams) is required to save a preset.');
+      return;
+    }
+    const result = saveManualPreset({
+      name: entry.name,
+      grams: entry.gramsTotal,
+      protein: entry.protein,
+      calories: entry.calories,
+    });
+    if (!result.ok) {
+      toast.error('Could not save preset.');
+      return;
+    }
+    toast.success(result.updated ? 'Saved preset updated.' : 'Saved for reuse in this browser.');
+  };
 
   return (
     <Card className="p-4 hover:shadow-md transition-shadow">
@@ -63,14 +86,29 @@ export function FoodEntry({ entry, onDelete }: FoodEntryProps) {
           </div>
         </div>
         
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={() => onDelete(entry.id)}
-          className="text-destructive hover:text-destructive"
-        >
-          <Trash2 className="size-4" />
-        </Button>
+        <div className="flex shrink-0 flex-col gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => onDelete(entry.id)}
+            className="text-destructive hover:text-destructive"
+            aria-label="Delete entry"
+          >
+            <Trash2 className="size-4" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={handleSavePreset}
+            disabled={!gramsKnown}
+            title={!gramsKnown ? savePresetDisabledTitle : undefined}
+            className="text-teal-700 hover:text-teal-800 dark:text-teal-400 dark:hover:text-teal-300"
+            aria-label={gramsKnown ? 'Save as preset' : savePresetDisabledTitle}
+          >
+            <Save className="size-4" />
+          </Button>
+        </div>
       </div>
     </Card>
   );
