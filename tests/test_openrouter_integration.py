@@ -1,4 +1,4 @@
-"""Live OpenRouter (meal LLM / OPENROUTER_MODEL, e.g. gpt-5-mini).
+"""Live OpenRouter (meal LLM / OPENROUTER_MODEL, e.g. gpt-5.4-mini).
 
 These are **not** USDA tests. They intentionally call `parse_meal_with_llm` over HTTP.
 

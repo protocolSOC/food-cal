@@ -256,7 +256,7 @@ async def test_fdc_style_usda_line_resolves_without_llm(
 ) -> None:
     """USDA autocomplete line `Orange, raw` → DB path.
 
-    Must not call `parse_meal_with_llm` (OPENROUTER_MODEL, e.g. gpt-5-mini). Sanity nano
+    Must not call `parse_meal_with_llm` (OPENROUTER_MODEL, e.g. gpt-5.4-mini). Sanity guardrail
     (`validate_food_result_with_llm` / LLM_SANITY_MODEL) is disabled in conftest for tests.
     """
 
@@ -273,7 +273,7 @@ async def test_fdc_style_usda_line_resolves_without_llm(
 
     async def boom_sanity_llm(*_a, **_kw):
         raise AssertionError(
-            "validate_food_result_with_llm (nano) must not run; test uses stubbed lookup only"
+            "validate_food_result_with_llm (sanity LLM) must not run; test uses stubbed lookup only"
         )
 
     monkeypatch.setattr("app.llm.parse_meal_with_llm", boom_meal_llm)
@@ -311,7 +311,7 @@ async def test_fdc_style_head_fallback_resolves_without_meal_llm(
 
     async def boom_sanity_llm(*_a, **_kw):
         raise AssertionError(
-            "validate_food_result_with_llm (nano) must not run; test uses stubbed lookup only"
+            "validate_food_result_with_llm (sanity LLM) must not run; test uses stubbed lookup only"
         )
 
     monkeypatch.setattr("app.llm.parse_meal_with_llm", boom_meal_llm)
@@ -390,7 +390,7 @@ async def test_stale_cached_apple_row_is_repaired_without_llm(
     assert logged["items"][0]["grams"] == pytest.approx(185.0, abs=0.2)
 
 
-async def test_sanity_guardrail_disabled_does_not_call_nano(
+async def test_sanity_guardrail_disabled_does_not_call_sanity_llm(
     client,
     today_iso: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -398,15 +398,15 @@ async def test_sanity_guardrail_disabled_does_not_call_nano(
     async def suspicious_lookup(_query: str):
         return llm_mod.FoodLookupResult(52.0, 0.3, 20.0, "fruit")
 
-    async def boom_nano(*_args, **_kwargs):
-        raise AssertionError("Nano sanity check should not be called when disabled")
+    async def boom_sanity(*_args, **_kwargs):
+        raise AssertionError("Sanity LLM should not be called when disabled")
 
     async def boom_llm(_text: str) -> dict:
         raise AssertionError("Meal LLM should not be called for bare apple")
 
     monkeypatch.setenv("LLM_SANITY_CHECK_ENABLED", "0")
     monkeypatch.setattr("app.off_foods.lookup_food", suspicious_lookup)
-    monkeypatch.setattr("app.llm.validate_food_result_with_llm", boom_nano)
+    monkeypatch.setattr("app.llm.validate_food_result_with_llm", boom_sanity)
     monkeypatch.setattr("app.llm.parse_meal_with_llm", boom_llm)
 
     log_r = await client.post("/log-meal", json={"text": "apple", "date": today_iso})
@@ -506,6 +506,21 @@ async def test_sanity_guardrail_enabled_error_is_ignored(
     logged = log_r.json()
     assert logged["total_calories"] == pytest.approx(10.4, abs=0.2)
     assert logged["items"][0]["grams"] == pytest.approx(20.0, abs=0.2)
+
+
+async def test_validate_food_result_with_llm_requires_sanity_model_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "dummy-key-for-test")
+    candidate = FoodLookupResult(52.0, 0.3, 182.0, "fruit")
+
+    monkeypatch.delenv("LLM_SANITY_MODEL", raising=False)
+    with pytest.raises(RuntimeError, match="LLM_SANITY_MODEL"):
+        await llm_mod.validate_food_result_with_llm("apple", candidate, None)
+
+    monkeypatch.setenv("LLM_SANITY_MODEL", "  \t  ")
+    with pytest.raises(RuntimeError, match="LLM_SANITY_MODEL"):
+        await llm_mod.validate_food_result_with_llm("apple", candidate, None)
 
 
 async def test_chicken_with_oil_uses_llm_not_plain_db_row(

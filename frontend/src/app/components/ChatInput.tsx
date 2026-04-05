@@ -4,7 +4,7 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { toast } from 'sonner';
 import { fetchFoodSuggestions } from '../utils/api';
-import { activeSearchQuery, replaceActiveToken } from '../utils/foodNameQuery';
+import { effectiveSearchQuery, getPresetSuggestionMode, replaceActiveToken } from '../utils/foodNameQuery';
 import {
   deleteManualPreset,
   listAllManualPresets,
@@ -58,26 +58,34 @@ export function ChatInput({
       return;
     }
 
-    const q = activeSearchQuery(input);
+    const mode = getPresetSuggestionMode(input);
 
-    if (q === null) {
+    if (mode.kind === 'browse') {
       const all = listAllManualPresets(MAX_PRESETS);
       setPresetSuggestions(all);
       setUsdaSuggestions([]);
       setUsdaEnabled(true);
-      setSelectedIndex(all.length > 0 ? 0 : -1);
+      setSelectedIndex(-1);
+      return;
+    }
+
+    const q = mode.q;
+    const presets = matchManualPresets(q, 6, mode.requiredWords);
+    setPresetSuggestions(presets);
+    setSelectedIndex(-1);
+
+    if (q.length < 2) {
+      setUsdaSuggestions([]);
+      setUsdaEnabled(true);
       return;
     }
 
     debounceRef.current = setTimeout(() => {
       void (async () => {
-        const presets = matchManualPresets(q, 6);
-        setPresetSuggestions(presets);
         const { suggestions: list, usdaEnabled: enabled } = await fetchFoodSuggestions(q, 6);
         setUsdaSuggestions(list);
         setUsdaEnabled(enabled);
-        const total = presets.length + list.length;
-        setSelectedIndex(total > 0 ? 0 : -1);
+        setSelectedIndex(-1);
       })();
     }, 350);
     return () => {
@@ -120,18 +128,14 @@ export function ChatInput({
 
   const removePreset = (id: string) => {
     if (!deleteManualPreset(id)) return;
-    const q = activeSearchQuery(input);
-    if (q === null) {
+    const mode = getPresetSuggestionMode(input);
+    if (mode.kind === 'browse') {
       const all = listAllManualPresets(MAX_PRESETS);
       setPresetSuggestions(all);
-      setSelectedIndex(all.length > 0 ? 0 : -1);
+      setSelectedIndex(-1);
     } else {
-      setPresetSuggestions((prev) => {
-        const next = prev.filter((p) => p.id !== id);
-        const total = next.length + usdaSuggestions.length;
-        setSelectedIndex(total > 0 ? 0 : -1);
-        return next;
-      });
+      setPresetSuggestions(matchManualPresets(mode.q, 6, mode.requiredWords));
+      setSelectedIndex(-1);
     }
     toast.success('Removed from saved list');
   };
@@ -173,10 +177,9 @@ export function ChatInput({
     }
 
     if (e.key === 'Enter') {
-      if (showList && suggestionRows.length > 0) {
+      if (showList && suggestionRows.length > 0 && selectedIndex >= 0) {
         e.preventDefault();
-        const idx = selectedIndex >= 0 ? selectedIndex : 0;
-        const row = suggestionRows[idx];
+        const row = suggestionRows[selectedIndex];
         if (row) applySuggestionRow(row);
         return;
       }
@@ -241,7 +244,7 @@ export function ChatInput({
   };
 
   const showDropdown = focused && suggestionRows.length > 0;
-  const activeQ = activeSearchQuery(input);
+  const activeQ = effectiveSearchQuery(input);
   const showUsdaHint =
     focused && Boolean(activeQ) && !usdaEnabled && suggestionRows.length === 0;
 

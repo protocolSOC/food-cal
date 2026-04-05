@@ -51,12 +51,21 @@ function writeAll(list: ManualFoodPreset[]): void {
   }
 }
 
-/** Match presets whose name contains `q` (case-insensitive). Newest first. */
-export function matchManualPresets(q: string, limit: number): ManualFoodPreset[] {
+/**
+ * Match presets whose name contains `q` (case-insensitive). When `requiredWords` is set, each
+ * word must also appear in the name — so "לאפה ש" requires "לאפה" in the name, not only "ש".
+ * Newest first.
+ */
+export function matchManualPresets(q: string, limit: number, requiredWords: string[] = []): ManualFoodPreset[] {
   const needle = q.trim().toLowerCase();
-  if (needle.length < 2) return [];
+  if (needle.length < 1) return [];
+  const reqs = requiredWords.map((w) => w.trim().toLowerCase()).filter((w) => w.length > 0);
   const list = readRaw()
-    .filter((p) => p.name.toLowerCase().includes(needle))
+    .filter((p) => {
+      const name = p.name.toLowerCase();
+      if (!reqs.every((rw) => name.includes(rw))) return false;
+      return name.includes(needle);
+    })
     .sort((a, b) => b.savedAt - a.savedAt);
   return list.slice(0, Math.max(0, limit));
 }

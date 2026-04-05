@@ -140,7 +140,12 @@ async def validate_food_result_with_llm(
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set; cannot run LLM sanity check")
-    model = os.environ.get("LLM_SANITY_MODEL", "openai/gpt-5-nano")
+    model = (os.environ.get("LLM_SANITY_MODEL") or "").strip()
+    if not model:
+        raise RuntimeError(
+            "LLM_SANITY_MODEL is not set (or is empty); set it to an OpenRouter model id "
+            "(e.g. openai/gpt-5.4-nano) when using the LLM sanity guardrail."
+        )
     referer = os.environ.get("OPENROUTER_HTTP_REFERER", "https://github.com/hybrid-calorie-app")
     app_name = os.environ.get("OPENROUTER_APP_NAME", "Hybrid Calorie App")
     max_tokens_raw = os.environ.get("LLM_SANITY_MAX_TOKENS", "400")
@@ -304,7 +309,7 @@ async def parse_meal_with_llm(text: str) -> dict[str, Any]:
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set; cannot parse vague meal without LLM")
 
-    model = os.environ.get("OPENROUTER_MODEL", "openai/gpt-5-mini")
+    model = os.environ.get("OPENROUTER_MODEL", "openai/gpt-5.4-mini")
     referer = os.environ.get("OPENROUTER_HTTP_REFERER", "https://github.com/hybrid-calorie-app")
     app_name = os.environ.get("OPENROUTER_APP_NAME", "Hybrid Calorie App")
 

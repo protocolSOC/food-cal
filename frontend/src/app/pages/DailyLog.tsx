@@ -265,7 +265,7 @@ export default function DailyLog() {
           <Tabs
             value={inputMode}
             onValueChange={(v) => setInputMode(v as 'chat' | 'manual')}
-            className="mb-6"
+            className="relative z-10 mb-6"
           >
             <Card className="bg-white/80 backdrop-blur">
               <CardHeader>

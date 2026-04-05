@@ -6,7 +6,7 @@ import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { cn } from './ui/utils';
 import { fetchFoodSuggestions } from '../utils/api';
-import { activeSearchQuery, replaceActiveToken } from '../utils/foodNameQuery';
+import { effectiveSearchQuery, getPresetSuggestionMode, replaceActiveToken } from '../utils/foodNameQuery';
 import {
   deleteManualPreset,
   listAllManualPresets,
@@ -86,26 +86,34 @@ export function ManualFoodInput({ onSubmit }: ManualFoodInputProps) {
       return;
     }
 
-    const q = activeSearchQuery(formData.name);
+    const mode = getPresetSuggestionMode(formData.name);
 
-    if (q === null) {
+    if (mode.kind === 'browse') {
       const all = listAllManualPresets(MAX_PRESETS);
       setPresetSuggestions(all);
       setUsdaSuggestions([]);
       setUsdaEnabled(true);
-      setSelectedIndex(all.length > 0 ? 0 : -1);
+      setSelectedIndex(-1);
+      return;
+    }
+
+    const q = mode.q;
+    const presets = matchManualPresets(q, 6, mode.requiredWords);
+    setPresetSuggestions(presets);
+    setSelectedIndex(-1);
+
+    if (q.length < 2) {
+      setUsdaSuggestions([]);
+      setUsdaEnabled(true);
       return;
     }
 
     debounceRef.current = setTimeout(() => {
       void (async () => {
-        const presets = matchManualPresets(q, 6);
-        setPresetSuggestions(presets);
         const { suggestions: list, usdaEnabled: enabled } = await fetchFoodSuggestions(q, 6);
         setUsdaSuggestions(list);
         setUsdaEnabled(enabled);
-        const total = presets.length + list.length;
-        setSelectedIndex(total > 0 ? 0 : -1);
+        setSelectedIndex(-1);
       })();
     }, 350);
     return () => {
@@ -153,18 +161,14 @@ export function ManualFoodInput({ onSubmit }: ManualFoodInputProps) {
 
   const removePreset = (id: string) => {
     if (!deleteManualPreset(id)) return;
-    const q = activeSearchQuery(formData.name);
-    if (q === null) {
+    const mode = getPresetSuggestionMode(formData.name);
+    if (mode.kind === 'browse') {
       const all = listAllManualPresets(MAX_PRESETS);
       setPresetSuggestions(all);
-      setSelectedIndex(all.length > 0 ? 0 : -1);
+      setSelectedIndex(-1);
     } else {
-      setPresetSuggestions((prev) => {
-        const next = prev.filter((p) => p.id !== id);
-        const total = next.length + usdaSuggestions.length;
-        setSelectedIndex(total > 0 ? 0 : -1);
-        return next;
-      });
+      setPresetSuggestions(matchManualPresets(mode.q, 6, mode.requiredWords));
+      setSelectedIndex(-1);
     }
     toast.success('Removed from saved list');
   };
@@ -215,7 +219,7 @@ export function ManualFoodInput({ onSubmit }: ManualFoodInputProps) {
   };
 
   const showNameDropdown = suggestionsOpen && suggestionRows.length > 0;
-  const activeQ = activeSearchQuery(formData.name);
+  const activeQ = effectiveSearchQuery(formData.name);
   const showUsdaHint =
     suggestionsOpen && Boolean(activeQ) && !usdaEnabled && suggestionRows.length === 0;
 
@@ -239,10 +243,9 @@ export function ManualFoodInput({ onSubmit }: ManualFoodInputProps) {
     }
 
     if (e.key === 'Enter') {
-      if (showList && suggestionRows.length > 0) {
+      if (showList && suggestionRows.length > 0 && selectedIndex >= 0) {
         e.preventDefault();
-        const idx = selectedIndex >= 0 ? selectedIndex : 0;
-        const row = suggestionRows[idx];
+        const row = suggestionRows[selectedIndex];
         if (row) applySuggestionRow(row);
         return;
       }
