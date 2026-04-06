@@ -197,8 +197,9 @@ export default function DailyLog() {
         <AnimatePresence mode="wait">
           {showChat ? (
             <motion.div key="form"
-              initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}
-              transition={{ type: 'spring', stiffness: 300, damping: 28 }}
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0, transition: { type: 'spring', stiffness: 300, damping: 28 } }}
+              exit={{ opacity: 0, y: -8, transition: { type: 'tween', duration: 0.15, ease: 'easeOut' } }}
               className="mb-5">
               <Tabs value={inputMode} onValueChange={(v) => setInputMode(v as 'chat' | 'manual')}>
                 <Card className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl overflow-hidden shadow-xl">
@@ -244,8 +245,9 @@ export default function DailyLog() {
             </motion.div>
           ) : (
             <motion.div key="cta"
-              initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-              transition={{ type: 'spring', stiffness: 300, damping: 28 }}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0, transition: { type: 'spring', stiffness: 300, damping: 28 } }}
+              exit={{ opacity: 0, y: -4, transition: { type: 'tween', duration: 0.15, ease: 'easeOut' } }}
               className="mb-5">
               <motion.button
                 whileHover={{ scale: 1.02, y: -2 }} whileTap={{ scale: 0.97 }}
