@@ -1,0 +1,94 @@
+---
+description: Hybrid Calorie Tracking App — product goals, architecture, parsing strategy, and non-goals for LLM + SQLite backend.
+alwaysApply: true
+---
+
+# Project: Hybrid Calorie Tracking App (LLM + Structured DB)
+
+## Goal
+
+Build a low-friction calorie tracking app that allows natural input (text or voice) while maintaining consistent and reasonably accurate calorie/protein tracking without requiring exact ingredient entry.
+
+## Core Concept
+
+The system combines:
+
+- **Deterministic calculation** (food database)
+- **LLM-based parsing and estimation** (only when needed)
+
+This avoids strict/manual logging while preventing LLM inconsistency.
+
+## User Flow
+
+User inputs a meal (text or voice), e.g.:
+
+- `"200g chicken breast, 50g rice"`
+- `"shawarma in laffa from restaurant"`
+
+**System classifies input:**
+
+- Structured / known food → handled locally
+- Unstructured / vague → sent to LLM
+
+**LLM returns structured JSON** (example):
+
+```json
+{
+  "items": [
+    {"food": "chicken shawarma", "grams": 180},
+    {"food": "laffa bread", "grams": 100},
+    {"food": "tahini", "grams": 30}
+  ],
+  "estimate_type": "range",
+  "calories_likely": 800,
+  "calories_low": 650,
+  "calories_high": 950
+}
+```
+
+**Backend:**
+
+- Maps foods to internal DB if possible
+- Calculates calories/protein (preferred) or uses LLM estimate (fallback)
+- Result is saved and reused for similar future inputs
+
+## Key Features
+
+1. **Hybrid Parsing System** — Local parser (regex / rules) for simple inputs; LLM fallback for complex inputs
+2. **Food Database (core)** — Per 100g calories + protein; user-extensible; supports mapping from LLM outputs
+3. **Smart Reuse (critical)** — Previously logged meals become reusable presets; reduces repeated LLM calls; improves consistency over time
+4. **Estimation System** — Supports exact values, estimated values, ranges (low / likely / high); restaurant meals default to estimates
+5. **Daily Tracking** — Total calories, total protein, optional range tracking
+
+## Architecture
+
+- **Frontend:** Simple input (text + optional voice), daily summary view, history
+- **Backend (FastAPI):** `/log-meal`, `/parse-meal`, `/get-daily-summary`
+- **LLM Integration:** OpenRouter (free tier) or local (Ollama); used only when parsing fails locally
+- **Storage:** SQLite (initial) — tables: `entries`, `items`, `foods`
+
+## Design Principles
+
+- Minimize user friction
+- Prefer consistency over precision
+- Avoid unnecessary LLM calls
+- LLM = parser, not source of truth
+- Support uncertainty explicitly (ranges)
+
+## Implementation rules
+
+- **No hardcoded solutions** — Avoid one-off literals, special-case branches, or fixed answers that should come from the database, configuration, or real parsing. Prefer data-driven and reusable behavior.
+- **No mocks** — Do not ship mock APIs, fake data stores, or stubbed services in app code. Integrate with real backends and data; tests may use doubles only in dedicated test code, not in production paths.
+
+## Non-Goals (important)
+
+- Perfect calorie accuracy
+- Full nutrition analysis
+- Complex diet planning
+
+## Success Criteria
+
+- User can log a meal in under 5 seconds
+- Repeated meals require near-zero effort
+- Daily calories track weight trend correctly over time
+- System works even with vague inputs
