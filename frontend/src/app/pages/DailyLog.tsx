@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router';
 import { ArrowLeft, Calendar as CalendarIcon, Edit3, MessageSquare, Sparkles } from 'lucide-react';
 import { Button } from '../components/ui/button';
@@ -24,13 +24,16 @@ import {
   type FoodEntry,
 } from '../utils/foodData';
 import {
-  logMealToBackend,
   logManualMealToBackend,
   fetchEntriesForDate,
   deleteEntryRemote,
   ApiError,
   readLlmFallbackPreference,
   writeLlmFallbackPreference,
+  enqueueLogMealJob,
+  getMealJobStatus,
+  listActiveMealJobs,
+  type MealJob,
 } from '../utils/api';
 import { toast } from 'sonner';
 
@@ -77,10 +80,18 @@ export default function DailyLog() {
   }, [date]);
   const [entries, setEntries] = useState<FoodEntry[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [pendingEntry, setPendingEntry] = useState<{
+
+  type PendingJob = {
+    localId: string;
+    jobId: number;
+    preview: string;
     mode: 'chat' | 'manual';
-    preview?: string;
-  } | null>(null);
+    error?: string;
+  };
+  const [pendingJobs, setPendingJobs] = useState<PendingJob[]>([]);
+  // Track active polling intervals keyed by localId so we can cancel on unmount.
+  const pollRefs = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
+
   const [showChat, setShowChat] = useState(false);
   const [inputMode, setInputMode] = useState<'chat' | 'manual'>('chat');
   const [llmFallback, setLlmFallback] = useState(() => readLlmFallbackPreference());
@@ -108,42 +119,111 @@ export default function DailyLog() {
     return () => ac.abort();
   }, [selectedDate, loadDayEntries]);
 
+  // Clean up all polling intervals on unmount.
+  useEffect(() => {
+    const refs = pollRefs.current;
+    return () => {
+      refs.forEach((id) => clearInterval(id));
+      refs.clear();
+    };
+  }, []);
+
+  // Recover in-flight jobs when the user navigates to a date (e.g. browser refresh).
+  useEffect(() => {
+    const ds = formatDate(selectedDate);
+    void listActiveMealJobs(ds).then((jobs) => {
+      if (jobs.length === 0) return;
+      const recovered: PendingJob[] = jobs.map((j: MealJob) => ({
+        localId: `recovered-${j.job_id}`,
+        jobId: j.job_id,
+        preview: j.raw_text.slice(0, 80),
+        mode: 'chat' as const,
+      }));
+      setPendingJobs((prev) => {
+        const existingJobIds = new Set(prev.map((p) => p.jobId));
+        const toAdd = recovered.filter((r) => !existingJobIds.has(r.jobId));
+        if (toAdd.length === 0) return prev;
+        toAdd.forEach((r) => startPolling(r.localId, r.jobId, ds));
+        return [...prev, ...toAdd];
+      });
+    });
+    // startPolling is stable (defined with useCallback below); disable exhaustive-deps here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDate]);
+
   const totals = useMemo(() => {
     const totalCalories = entries.reduce((sum, e) => sum + e.calories, 0);
     const totalProtein = entries.reduce((sum, e) => sum + e.protein, 0);
     return { totalCalories, totalProtein, count: entries.length };
   }, [entries]);
 
+  // Start polling a job until it reaches a terminal state, then refresh entries.
+  const startPolling = useCallback(
+    (localId: string, jobId: number, ds: string) => {
+      // Exponential backoff: start at 1s, cap at 4s.
+      let interval = 1000;
+      const tick = async () => {
+        try {
+          const job = await getMealJobStatus(jobId);
+          if (job.status === 'done') {
+            clearInterval(pollRefs.current.get(localId));
+            pollRefs.current.delete(localId);
+            setPendingJobs((prev) => prev.filter((p) => p.localId !== localId));
+            await loadDayEntries({ signal: undefined });
+            toast.success('Meal logged!');
+          } else if (job.status === 'failed') {
+            clearInterval(pollRefs.current.get(localId));
+            pollRefs.current.delete(localId);
+            const errMsg = job.error ?? 'Could not log meal';
+            setPendingJobs((prev) =>
+              prev.map((p) => (p.localId === localId ? { ...p, error: errMsg } : p)),
+            );
+            toast.error(errMsg);
+            // Remove the failed card after 6s so the list doesn't stay cluttered.
+            setTimeout(() => {
+              setPendingJobs((prev) => prev.filter((p) => p.localId !== localId));
+            }, 6000);
+          }
+          // Still queued/processing — back off gently.
+          if (interval < 4000) interval = Math.min(interval * 1.5, 4000);
+        } catch {
+          // Network hiccup — keep polling.
+        }
+      };
+      const id = setInterval(() => void tick(), interval);
+      pollRefs.current.set(localId, id);
+    },
+    [loadDayEntries],
+  );
+
   const handleChatSubmit = async (text: string) => {
     const ds = dateStr;
     const trimmed = text.trim();
     const preview = trimmed.slice(0, 80);
-    setPendingEntry({ mode: 'chat', preview: preview || undefined });
+
     try {
-      let apiMessage: string | null = null;
-      try {
-        await logMealToBackend(text, ds, llmFallback);
-        await loadDayEntries();
-        toast.success('Meal logged!');
-        setShowChat(false);
+      const job = await enqueueLogMealJob(text, ds, llmFallback);
+      const localId = `job-${job.job_id}-${Date.now()}`;
+      setPendingJobs((prev) => [
+        { localId, jobId: job.job_id, preview, mode: 'chat' },
+        ...prev,
+      ]);
+      startPolling(localId, job.job_id, ds);
+      setShowChat(false);
+    } catch (e) {
+      // Enqueue itself failed — API is unreachable; fall back to offline.
+      if (e instanceof ApiError && e.status === 422) {
+        toast.error(e.message);
         return;
-      } catch (e) {
-        if (e instanceof ApiError && e.status === 422) {
-          toast.error(e.message);
-          return;
-        }
-        apiMessage = e instanceof Error ? e.message : String(e);
       }
-
+      const apiMessage = e instanceof Error ? e.message : String(e);
       const parsed = parseFoodInput(text);
-
       if (parsed && parsed.name) {
         addOfflineFoodEntry(ds, {
           name: parsed.name,
           calories: parsed.calories || 0,
           protein: parsed.protein || 0,
         });
-
         await loadDayEntries();
         toast.success(`Added ${parsed.name}! (saved in this browser only — not in the database)`);
         if (apiMessage) toast.info(`API unavailable: ${apiMessage}`);
@@ -154,30 +234,27 @@ export default function DailyLog() {
             "Couldn't log that meal. Start the API and ensure .env in the project root has OPENROUTER_API_KEY for vague foods. Try e.g. 200g chicken breast.",
         );
       }
-    } finally {
-      setPendingEntry(null);
     }
   };
 
   const handleManualSubmit = async (data: ManualFoodFormData) => {
     const ds = dateStr;
     const preview = data.name.trim().slice(0, 80);
-    setPendingEntry({ mode: 'manual', preview: preview || undefined });
+    const localId = `manual-${Date.now()}`;
+    setPendingJobs((prev) => [{ localId, jobId: -1, preview, mode: 'manual' }, ...prev]);
     try {
-      try {
-        await logManualMealToBackend(ds, data);
-        await loadDayEntries();
-        toast.success('Food entry added!');
-        setShowChat(false);
-      } catch (e) {
-        if (e instanceof ApiError) {
-          toast.error(e.message);
-          return;
-        }
+      await logManualMealToBackend(ds, data);
+      await loadDayEntries();
+      toast.success('Food entry added!');
+      setShowChat(false);
+    } catch (e) {
+      if (e instanceof ApiError) {
+        toast.error(e.message);
+      } else {
         toast.error(e instanceof Error ? e.message : 'Could not add entry');
       }
     } finally {
-      setPendingEntry(null);
+      setPendingJobs((prev) => prev.filter((p) => p.localId !== localId));
     }
   };
 
@@ -350,10 +427,15 @@ export default function DailyLog() {
         )}
 
         <div className="space-y-3">
-          {pendingEntry ? (
-            <PendingFoodEntryCard mode={pendingEntry.mode} preview={pendingEntry.preview} />
-          ) : null}
-          {entries.length === 0 && !pendingEntry ? (
+          {pendingJobs.map((job) => (
+            <PendingFoodEntryCard
+              key={job.localId}
+              mode={job.mode}
+              preview={job.preview}
+              error={job.error}
+            />
+          ))}
+          {entries.length === 0 && pendingJobs.length === 0 ? (
             <Card className="bg-white/60 backdrop-blur">
               <CardContent className="p-12 text-center">
                 <p className="text-muted-foreground">No meals logged for this day yet.</p>
@@ -362,11 +444,11 @@ export default function DailyLog() {
                 </p>
               </CardContent>
             </Card>
-          ) : (
+          ) : entries.length > 0 ? (
             entries.map((entry) => (
               <FoodEntryCard key={entry.id} entry={entry} onDelete={handleDeleteEntry} />
             ))
-          )}
+          ) : null}
         </div>
       </div>
     </div>

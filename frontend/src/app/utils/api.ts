@@ -100,6 +100,79 @@ export async function logMealToBackend(
   return res.json() as Promise<LogMealResponse>;
 }
 
+// ---------------------------------------------------------------------------
+// Async meal log jobs
+// ---------------------------------------------------------------------------
+
+export type MealJobStatus = 'queued' | 'processing' | 'done' | 'failed';
+
+export type MealJob = {
+  job_id: number;
+  status: MealJobStatus;
+  date_iso: string;
+  raw_text: string;
+  entry_id: number | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function enqueueLogMealJob(
+  text: string,
+  date: string,
+  llmFallback = true,
+): Promise<MealJob> {
+  const base = getApiBaseUrl();
+  let res: Response;
+  try {
+    res = await fetch(`${base}/log-meal/jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: text.trim(), date, llm_fallback: llmFallback }),
+    });
+  } catch (e) {
+    const msg =
+      e instanceof TypeError
+        ? `Cannot reach API at ${base}. Start from the project folder: python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000`
+        : String(e);
+    throw new Error(msg);
+  }
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new ApiError(formatApiError(res.status, errText), res.status);
+  }
+  return res.json() as Promise<MealJob>;
+}
+
+export async function getMealJobStatus(jobId: number): Promise<MealJob> {
+  const base = getApiBaseUrl();
+  let res: Response;
+  try {
+    res = await fetch(`${base}/log-meal/jobs/${jobId}`);
+  } catch (e) {
+    const msg =
+      e instanceof TypeError ? `Cannot reach API at ${base}.` : String(e);
+    throw new Error(msg);
+  }
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(formatApiError(res.status, errText));
+  }
+  return res.json() as Promise<MealJob>;
+}
+
+export async function listActiveMealJobs(date: string): Promise<MealJob[]> {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/log-meal/jobs?date=${encodeURIComponent(date)}`);
+    if (!res.ok) return [];
+    const data = (await res.json()) as { jobs: MealJob[] };
+    return Array.isArray(data.jobs) ? data.jobs : [];
+  } catch {
+    return [];
+  }
+}
+
 export type ManualMealPayload = {
   name: string;
   grams: number;

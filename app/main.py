@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -29,12 +30,19 @@ from app.meals import (
     log_meal,
     validate_date_iso,
 )
+import app.meal_jobs as meal_jobs
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     db.get_connection()
+    worker_task = meal_jobs.start_worker()
     yield
+    worker_task.cancel()
+    try:
+        await worker_task
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(title="Hybrid Calorie App", lifespan=lifespan)
@@ -64,6 +72,7 @@ async def root() -> dict[str, str]:
         "service": "Hybrid Calorie App API",
         "docs": "/docs",
         "log_meal": "POST /log-meal",
+        "log_meal_async": "POST /log-meal/jobs",
         "log_meal_manual": "POST /log-meal-manual",
         "daily_summary": "GET /get-daily-summary?date=YYYY-MM-DD",
         "entries": "GET /entries?date=YYYY-MM-DD",
@@ -185,6 +194,51 @@ async def post_log_meal(body: LogMealBody) -> dict:
         )
         # endregion
         raise
+
+
+class EnqueueJobBody(BaseModel):
+    text: str
+    date: str
+    llm_fallback: bool = True
+
+    @field_validator("text")
+    @classmethod
+    def strip_text(cls, v: str) -> str:
+        return v.strip()
+
+
+@app.post("/log-meal/jobs")
+async def enqueue_log_meal_job(body: EnqueueJobBody) -> dict:
+    """Enqueue a meal for async processing. Returns immediately with a job_id."""
+    if not body.text:
+        raise HTTPException(status_code=400, detail="text is required")
+    try:
+        validate_date_iso(body.date)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    job = meal_jobs.create_job(body.date, body.text, body.llm_fallback)
+    meal_jobs.enqueue(job["job_id"])
+    return job
+
+
+@app.get("/log-meal/jobs")
+async def list_active_meal_jobs(date: str) -> dict[str, list]:
+    """Return queued/processing jobs for a date (for UI recovery on reload)."""
+    try:
+        validate_date_iso(date)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"jobs": meal_jobs.list_active_jobs_for_date(date)}
+
+
+@app.get("/log-meal/jobs/{job_id}")
+async def get_meal_job_status(job_id: int) -> dict:
+    """Poll job status. Returns status, entry_id (when done), or error (when failed)."""
+    job = meal_jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    return job
 
 
 @app.get("/get-daily-summary")

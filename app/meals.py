@@ -134,6 +134,7 @@ def _fetch_entry(conn: sqlite3.Connection, entry_id: int) -> dict[str, Any]:
     if tc is None:
         raise ValueError("Stored entry has null total_calories (invalid or legacy row)")
     out: dict[str, Any] = {
+        "id": entry_id,
         "total_calories": float(tc),
         "items": items,
     }

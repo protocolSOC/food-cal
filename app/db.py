@@ -105,6 +105,28 @@ def _migrate_entries(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE entries ADD COLUMN created_at TEXT")
 
 
+def _migrate_meal_log_jobs(conn: sqlite3.Connection) -> None:
+    """Ensure meal_log_jobs table exists (for DBs created before this feature)."""
+    cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='meal_log_jobs'")
+    if cur.fetchone() is None:
+        conn.execute(
+            """
+            CREATE TABLE meal_log_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date_iso TEXT NOT NULL,
+                raw_text TEXT NOT NULL,
+                llm_fallback INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'queued',
+                error_detail TEXT,
+                entry_id INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (entry_id) REFERENCES entries(id) ON DELETE SET NULL
+            )
+            """
+        )
+
+
 def _init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
@@ -154,11 +176,25 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             edible_ratio REAL NOT NULL,
             bone_in INTEGER NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS meal_log_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date_iso TEXT NOT NULL,
+            raw_text TEXT NOT NULL,
+            llm_fallback INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'queued',
+            error_detail TEXT,
+            entry_id INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (entry_id) REFERENCES entries(id) ON DELETE SET NULL
+        );
         """
     )
     _migrate_foods(conn)
     _migrate_food_baselines(conn)
     _migrate_entries(conn)
+    _migrate_meal_log_jobs(conn)
 
 
 def _seed_if_empty(conn: sqlite3.Connection) -> None:
